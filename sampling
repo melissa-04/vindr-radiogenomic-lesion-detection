@@ -1,0 +1,22 @@
+Bu aşamada öğreneceğin şeyler:
+
+Dataset nedir?
+
+Class imbalance nedir?
+
+Neden tüm 20.000 görüntüyü kullanmadık?
+
+Neden mass + calcification seçtik?
+
+Bilimsel hedef:
+
+Modelin nadir ama klinik olarak önemli lezyonları öğrenmesi
+
+⚠️ Bu adımda:
+
+YOLO yok
+
+GPU yok
+
+Görüntü bile yok
+👉 Sadece CSV + mantık
