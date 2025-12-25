@@ -1,0 +1,14 @@
+Burada sana şunları öğreteceğim:
+
+DICOM nedir?
+
+16-bit vs 8-bit farkı
+
+Neden normalize ediyoruz?
+
+YOLO neden center-x / width ister?
+
+Bu aşama = projenin kalbi
+Çünkü:
+
+Yanlış preprocessing → en iyi model bile çöp sonuç verir
