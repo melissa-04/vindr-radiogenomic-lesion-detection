@@ -1,22 +1,107 @@
-Bu aşamada öğreneceğin şeyler:
+# sampling/select_image_ids.py
+from google.colab import drive
+drive.mount("/content/drive", force_remount=True)
 
-Dataset nedir?
+import os
+import pandas as pd
+import random
 
-Class imbalance nedir?
+PROJECT_ROOT = "/content/drive/MyDrive/vindr-radiogenomic-lesion-detection"
+CSV_PATH = f"{PROJECT_ROOT}/00_raw_data/finding_annotations.csv"
+OUT_DIR = f"{PROJECT_ROOT}/00_raw_data"
+os.makedirs(OUT_DIR, exist_ok=True)
 
-Neden tüm 20.000 görüntüyü kullanmadık?
+N_HEALTHY = 1500
+SEED = 42
+random.seed(SEED)
 
-Neden mass + calcification seçtik?
+df = pd.read_csv(CSV_PATH)
 
-Bilimsel hedef:
+# Pozitif: Mass veya Calcification
+pos = df[df["finding_categories"].str.contains("Mass|Calcification", case=False, na=False)].copy()
+pos_ids = sorted(pos["image_id"].unique().tolist())
 
-Modelin nadir ama klinik olarak önemli lezyonları öğrenmesi
+# Healthy: finding_categories boş (veya NaN) olanlar
+healthy = df[df["finding_categories"].isna()].copy()
+healthy_ids_all = sorted(healthy["image_id"].unique().tolist())
 
-⚠️ Bu adımda:
+# Healthy’den örnekle
+healthy_ids = random.sample(healthy_ids_all, N_HEALTHY)
 
-YOLO yok
+selected = pos_ids + healthy_ids
 
-GPU yok
+print(f"Lesion images (Mass and/or Calcification): {len(pos_ids)}")
+print(f"All images: {df['image_id'].nunique()}")
+print(f"Healthy images: {len(healthy_ids_all)}")
+print("\nFINAL DATASET SUMMARY")
+print(f"Total images: {len(selected)}")
+print(f"Lesion images: {len(pos_ids)}")
+print(f"Healthy images: {len(healthy_ids)}")
 
-Görüntü bile yok
-👉 Sadece CSV + mantık
+out_csv = f"{OUT_DIR}/selected_image_ids.csv"
+pd.DataFrame({"image_id": selected}).to_csv(out_csv, index=False)
+print("\nSaved image list to:", out_csv)
+
+
+
+
+
+
+
+
+# sampling/make_wget_lists.py
+from google.colab import drive
+drive.mount("/content/drive", force_remount=True)
+
+import os
+import pandas as pd
+import math
+
+PROJECT_ROOT = "/content/drive/MyDrive/vindr-radiogenomic-lesion-detection"
+RAW_DIR = f"{PROJECT_ROOT}/00_raw_data"
+SEL_CSV = f"{RAW_DIR}/selected_image_ids.csv"
+FIND_CSV = f"{RAW_DIR}/finding_annotations.csv"
+
+BATCH_SIZE = 200
+TEST_N = 15
+
+df_sel = pd.read_csv(SEL_CSV)
+df_find = pd.read_csv(FIND_CSV)
+
+# VinDr dosya yolu: images/<study_id>/<image_id>.dicom
+# finding_annotations.csv içinde study_id var
+id2study = dict(zip(df_find["image_id"], df_find["study_id"]))
+
+paths = []
+missing = 0
+for image_id in df_sel["image_id"].tolist():
+    study_id = id2study.get(image_id, None)
+    if study_id is None:
+        missing += 1
+        continue
+    paths.append(f"images/{study_id}/{image_id}.dicom")
+
+print("Total selected:", len(df_sel))
+print("Paths built:", len(paths))
+print("Missing study_id:", missing)
+
+# 15’lik test listesi
+test_list_path = f"{RAW_DIR}/vindr_test_files_15.txt"
+with open(test_list_path, "w") as f:
+    for p in paths[:TEST_N]:
+        f.write(p + "\n")
+print("Saved file list:", test_list_path)
+print("First 3 lines:")
+print("\n".join(paths[:3]))
+
+# Batch listeleri
+num_batches = math.ceil(len(paths) / BATCH_SIZE)
+for i in range(num_batches):
+    batch = paths[i*BATCH_SIZE:(i+1)*BATCH_SIZE]
+    batch_path = f"{RAW_DIR}/batch_{i+1:02d}.txt"
+    with open(batch_path, "w") as f:
+        f.write("\n".join(batch) + "\n")
+
+print(f"\nTotal files to download: {len(paths)}")
+print(f"Total batches: {num_batches}")
+print(f"First batch file: {RAW_DIR}/batch_01.txt")
