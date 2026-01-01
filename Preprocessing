@@ -1,14 +1,207 @@
-Burada sana şunları öğreteceğim:
+# Preprocessing/download_first_15_test.py
+from google.colab import drive
+drive.mount("/content/drive", force_remount=True)
 
-DICOM nedir?
+import os
+import getpass
 
-16-bit vs 8-bit farkı
+PROJECT_ROOT = "/content/drive/MyDrive/vindr-radiogenomic-lesion-detection"
+RAW_DIR = f"{PROJECT_ROOT}/00_raw_data"
+TEST_LIST = f"{RAW_DIR}/vindr_test_files_15.txt"
+OUT_DIR = f"{PROJECT_ROOT}/00_raw_data/test_dicoms"
+os.makedirs(OUT_DIR, exist_ok=True)
 
-Neden normalize ediyoruz?
+username = input("PhysioNet username: ")
+password = getpass.getpass("PhysioNet password (hidden): ")
 
-YOLO neden center-x / width ister?
+base = "https://physionet.org/files/vindr-mammo/1.0.0/"
 
-Bu aşama = projenin kalbi
-Çünkü:
+cmd = (
+    f'wget -c -N --user "{username}" --password "{password}" '
+    f'-i "{TEST_LIST}" --base="{base}" -P "{OUT_DIR}"'
+)
+print("\nRunning wget...\n")
+os.system(cmd)
 
-Yanlış preprocessing → en iyi model bile çöp sonuç verir
+print("\nSIZE CHECK (MB):")
+for fn in sorted(os.listdir(OUT_DIR)):
+    if fn.endswith(".dicom"):
+        fp = os.path.join(OUT_DIR, fn)
+        size_mb = os.path.getsize(fp) / (1024**2)
+        print(f"{fn} -> {size_mb:.2f} MB")
+# Preprocessing/check_one_dicom_pixels.py
+!pip -q install pydicom
+
+from google.colab import drive
+drive.mount("/content/drive", force_remount=True)
+
+import os
+import pydicom
+
+PROJECT_ROOT = "/content/drive/MyDrive/vindr-radiogenomic-lesion-detection"
+TEST_DICOM_DIR = f"{PROJECT_ROOT}/00_raw_data/test_dicoms"
+
+dicoms = [f for f in os.listdir(TEST_DICOM_DIR) if f.endswith(".dicom")]
+dicoms.sort()
+test_file = os.path.join(TEST_DICOM_DIR, dicoms[0])
+
+ds = pydicom.dcmread(test_file, stop_before_pixels=False)
+
+print("File:", os.path.basename(test_file))
+print("Has PixelData:", hasattr(ds, "PixelData"))
+print("Rows x Cols:", getattr(ds, "Rows", None), "x", getattr(ds, "Columns", None))
+print("BitsStored:", getattr(ds, "BitsStored", None))
+print("PhotometricInterpretation:", getattr(ds, "PhotometricInterpretation", None))
+
+
+
+
+
+
+
+# Preprocessing/download_all_batches.py
+from google.colab import drive
+drive.mount("/content/drive", force_remount=True)
+
+import os
+import getpass
+
+PROJECT_ROOT = "/content/drive/MyDrive/vindr-radiogenomic-lesion-detection"
+RAW_DATA_DIR = f"{PROJECT_ROOT}/00_raw_data"
+ALL_DICOM_DIR = f"{PROJECT_ROOT}/01_all_dicoms"
+os.makedirs(ALL_DICOM_DIR, exist_ok=True)
+
+batch_files = sorted([f for f in os.listdir(RAW_DATA_DIR) if f.startswith("batch_") and f.endswith(".txt")])
+
+username = input("PhysioNet username: ")
+password = getpass.getpass("PhysioNet password (hidden): ")
+
+base = "https://physionet.org/files/vindr-mammo/1.0.0/"
+
+for bf in batch_files:
+    batch_path = os.path.join(RAW_DATA_DIR, bf)
+    print(f"\nDownloading {bf} ...")
+    cmd = (
+        f'wget -c -N --user "{username}" --password "{password}" '
+        f'-i "{batch_path}" --base="{base}" -P "{ALL_DICOM_DIR}"'
+    )
+    os.system(cmd)
+
+print("\n✅ All batches processed.")
+
+
+
+
+# Preprocessing/dicom_to_png_640_split.py
+!pip -q install pydicom opencv-python-headless numpy
+
+from google.colab import drive
+drive.mount("/content/drive", force_remount=True)
+
+import os
+import numpy as np
+import pydicom
+import cv2
+import pandas as pd
+
+PROJECT_ROOT = "/content/drive/MyDrive/vindr-radiogenomic-lesion-detection"
+DICOM_DIR = f"{PROJECT_ROOT}/01_all_dicoms"
+RAW_DIR = f"{PROJECT_ROOT}/00_raw_data"
+
+CSV_PATH = f"{RAW_DIR}/finding_annotations.csv"
+SEL_CSV = f"{RAW_DIR}/selected_image_ids.csv"
+
+OUT_ROOT = f"{PROJECT_ROOT}/02_preprocessing/png_640"
+TRAIN_DIR = f"{OUT_ROOT}/train"
+VAL_DIR   = f"{OUT_ROOT}/val"
+os.makedirs(TRAIN_DIR, exist_ok=True)
+os.makedirs(VAL_DIR, exist_ok=True)
+
+df = pd.read_csv(CSV_PATH)
+selected = set(pd.read_csv(SEL_CSV)["image_id"].tolist())
+
+# leakage azaltmak için study bazlı split (bizde bu yaklaşımı hedefledik)
+# study_id üzerinden %80-%20
+unique_studies = sorted(df[df["image_id"].isin(selected)]["study_id"].unique().tolist())
+rng = np.random.default_rng(42)
+rng.shuffle(unique_studies)
+
+cut = int(len(unique_studies) * 0.8)
+train_studies = set(unique_studies[:cut])
+val_studies   = set(unique_studies[cut:])
+
+id2study = dict(zip(df["image_id"], df["study_id"]))
+
+def dicom_to_uint8(ds):
+    arr = ds.pixel_array.astype(np.float32)
+
+    # DICOM rescale
+    slope = float(getattr(ds, "RescaleSlope", 1.0))
+    inter = float(getattr(ds, "RescaleIntercept", 0.0))
+    arr = arr * slope + inter
+
+    # min-max normalize -> 0..255
+    arr -= arr.min()
+    if arr.max() > 0:
+        arr = arr / arr.max()
+    arr = (arr * 255.0).clip(0, 255).astype(np.uint8)
+
+    # MONOCHROME1 -> invert
+    photo = str(getattr(ds, "PhotometricInterpretation", "")).upper()
+    if "MONOCHROME1" in photo:
+        arr = 255 - arr
+
+    return arr, photo
+
+def process_one(image_id):
+    dicom_path = os.path.join(DICOM_DIR, f"{image_id}.dicom")
+    if not os.path.exists(dicom_path):
+        return False, "missing dicom"
+
+    study_id = id2study.get(image_id, None)
+    if study_id is None:
+        return False, "missing study_id"
+
+    out_dir = TRAIN_DIR if study_id in train_studies else VAL_DIR
+    out_path = os.path.join(out_dir, f"{image_id}.png")
+
+    # resume-safe
+    if os.path.exists(out_path):
+        return True, "skip"
+
+    try:
+        ds = pydicom.dcmread(dicom_path, stop_before_pixels=False)
+        img8, photo = dicom_to_uint8(ds)
+        img640 = cv2.resize(img8, (640, 640), interpolation=cv2.INTER_AREA)
+        cv2.imwrite(out_path, img640)
+        return True, f"ok ({photo})"
+    except OSError as e:
+        # Drive koparsa Errno 107 görüyorduk
+        return False, f"oserror: {e}"
+    except Exception as e:
+        return False, f"error: {e}"
+
+image_ids = sorted(list(selected))
+
+ok = 0
+fail = 0
+for i, image_id in enumerate(image_ids, 1):
+    success, msg = process_one(image_id)
+    if success:
+        ok += 1
+    else:
+        fail += 1
+        print(f"[WARN] Failed on {image_id}.dicom: {msg}")
+
+    if i % 50 == 0:
+        print(f"Processed {i}/{len(image_ids)} | ok={ok} fail={fail}")
+
+print("\n✅ PNG generation completed.")
+print("Train PNGs:", len([f for f in os.listdir(TRAIN_DIR) if f.endswith(".png")]))
+print("Val PNGs:",   len([f for f in os.listdir(VAL_DIR) if f.endswith(".png")]))
+print("Total PNGs:", len([f for f in os.listdir(TRAIN_DIR) if f.endswith('.png')]) + len([f for f in os.listdir(VAL_DIR) if f.endswith('.png')]))
+
+
+
+
+
