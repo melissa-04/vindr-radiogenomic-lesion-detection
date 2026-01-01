@@ -1,17 +1,236 @@
-Ancak şu şartla:
+# train_yolo/generate_yolo_labels_allboxes.py
+from google.colab import drive
+drive.mount("/content/drive", force_remount=True)
 
-Dataset hazır
+import os
+import pandas as pd
+import numpy as np
 
-Etiketler doğru
+PROJECT_ROOT = "/content/drive/MyDrive/vindr-radiogenomic-lesion-detection"
+CSV_PATH = f"{PROJECT_ROOT}/00_raw_data/finding_annotations.csv"
 
-Sanity check temiz
+PNG_ROOT = f"{PROJECT_ROOT}/02_preprocessing/png_640"
+PNG_TRAIN_DIR = f"{PNG_ROOT}/train"
+PNG_VAL_DIR   = f"{PNG_ROOT}/val"
 
-Burada:
+LABEL_ROOT = f"{PROJECT_ROOT}/03_yolo_labels_allboxes"
+LBL_TRAIN = f"{LABEL_ROOT}/train"
+LBL_VAL   = f"{LABEL_ROOT}/val"
+os.makedirs(LBL_TRAIN, exist_ok=True)
+os.makedirs(LBL_VAL, exist_ok=True)
 
-GPU açılacak
+df = pd.read_csv(CSV_PATH)
+df_mc = df[df["finding_categories"].str.contains("Mass|Calcification", case=False, na=False)].copy()
 
-Epoch nedir?
+# Sadece bizim PNG setinde olan image’lar
+train_ids = set(f.replace(".png","") for f in os.listdir(PNG_TRAIN_DIR) if f.endswith(".png"))
+val_ids   = set(f.replace(".png","") for f in os.listdir(PNG_VAL_DIR) if f.endswith(".png"))
+all_ids = train_ids | val_ids
+df_mc_in = df_mc[df_mc["image_id"].isin(all_ids)].copy()
 
-Loss nedir?
+CLASS_MAP = {"Mass": 0, "Calcification": 1}
 
-Precision / Recall ne demek
+def cat_to_cls(cat: str):
+    if "Mass" in cat:
+        return CLASS_MAP["Mass"]
+    if "Calcification" in cat:
+        return CLASS_MAP["Calcification"]
+    return None
+
+def row_to_yolo(row):
+    W, H = float(row["width"]), float(row["height"])
+    xmin, ymin, xmax, ymax = float(row["xmin"]), float(row["ymin"]), float(row["xmax"]), float(row["ymax"])
+
+    bw = (xmax - xmin) / W
+    bh = (ymax - ymin) / H
+    if bw <= 0 or bh <= 0:
+        return None
+
+    x_c = ((xmin + xmax) / 2) / W
+    y_c = ((ymin + ymax) / 2) / H
+
+    x_c = float(np.clip(x_c, 0, 1))
+    y_c = float(np.clip(y_c, 0, 1))
+    bw  = float(np.clip(bw,  0, 1))
+    bh  = float(np.clip(bh,  0, 1))
+
+    return x_c, y_c, bw, bh
+
+def write_labels(png_dir, out_dir):
+    png_files = sorted([f for f in os.listdir(png_dir) if f.endswith(".png")])
+    img_ids = [f.replace(".png","") for f in png_files]
+
+    grouped = df_mc_in.groupby("image_id")
+
+    total_imgs = len(img_ids)
+    labeled_imgs = 0
+    total_boxes = 0
+    cls_count = {0:0, 1:0}
+
+    for image_id in img_ids:
+        lines = []
+
+        if image_id in grouped.groups:
+            rows = grouped.get_group(image_id)
+            for _, r in rows.iterrows():
+                cls = cat_to_cls(str(r["finding_categories"]))
+                if cls is None:
+                    continue
+                yolo = row_to_yolo(r)
+                if yolo is None:
+                    continue
+                x_c, y_c, bw, bh = yolo
+                lines.append(f"{cls} {x_c:.6f} {y_c:.6f} {bw:.6f} {bh:.6f}")
+                total_boxes += 1
+                cls_count[cls] += 1
+
+        with open(os.path.join(out_dir, image_id + ".txt"), "w") as f:
+            f.write("\n".join(lines))
+
+        if len(lines) > 0:
+            labeled_imgs += 1
+
+    print(f"\nSplit: {os.path.basename(png_dir)}")
+    print("Total images:", total_imgs)
+    print("Images with >=1 box:", labeled_imgs)
+    print("Total boxes:", total_boxes)
+    print("Class counts:", cls_count)
+
+write_labels(PNG_TRAIN_DIR, LBL_TRAIN)
+write_labels(PNG_VAL_DIR,   LBL_VAL)
+
+print("\n✅ ALL-BOX YOLO labels created.")
+
+
+
+# train_yolo/build_yolo_dataset_allboxes.py
+from google.colab import drive
+drive.mount("/content/drive", force_remount=True)
+
+import os
+import shutil
+
+PROJECT_ROOT = "/content/drive/MyDrive/vindr-radiogenomic-lesion-detection"
+
+PNG_ROOT = f"{PROJECT_ROOT}/02_preprocessing/png_640"
+PNG_TRAIN_DIR = f"{PNG_ROOT}/train"
+PNG_VAL_DIR   = f"{PNG_ROOT}/val"
+
+LABEL_ROOT = f"{PROJECT_ROOT}/03_yolo_labels_allboxes"
+LBL_TRAIN = f"{LABEL_ROOT}/train"
+LBL_VAL   = f"{LABEL_ROOT}/val"
+
+YOLO_ROOT = f"{PROJECT_ROOT}/04_yolo_dataset_allboxes"
+
+IMG_TRAIN = f"{YOLO_ROOT}/images/train"
+IMG_VAL   = f"{YOLO_ROOT}/images/val"
+LBL_TRAIN2 = f"{YOLO_ROOT}/labels/train"
+LBL_VAL2   = f"{YOLO_ROOT}/labels/val"
+
+for d in [IMG_TRAIN, IMG_VAL, LBL_TRAIN2, LBL_VAL2]:
+    os.makedirs(d, exist_ok=True)
+
+def copy_files(src, dst, ext):
+    files = [f for f in os.listdir(src) if f.endswith(ext)]
+    for f in files:
+        shutil.copy(os.path.join(src, f), os.path.join(dst, f))
+    return len(files)
+
+n_img_tr = copy_files(PNG_TRAIN_DIR, IMG_TRAIN, ".png")
+n_img_va = copy_files(PNG_VAL_DIR,   IMG_VAL,   ".png")
+n_lbl_tr = copy_files(LBL_TRAIN,     LBL_TRAIN2, ".txt")
+n_lbl_va = copy_files(LBL_VAL,       LBL_VAL2,   ".txt")
+
+print("Train images:", n_img_tr)
+print("Val images:", n_img_va)
+print("Train labels:", n_lbl_tr)
+print("Val labels:", n_lbl_va)
+
+yaml_text = f"""
+path: {YOLO_ROOT}
+train: images/train
+val: images/val
+
+nc: 2
+names:
+  0: Mass
+  1: Calcification
+""".strip()
+
+with open(f"{YOLO_ROOT}/data.yaml", "w") as f:
+    f.write(yaml_text)
+
+print("\n✅ YOLO all-box dataset ready")
+print("data.yaml:", f"{YOLO_ROOT}/data.yaml")
+
+
+
+
+# train_yolo/train_yolo_allboxes.py
+!pip -q install ultralytics
+
+from google.colab import drive
+drive.mount("/content/drive", force_remount=True)
+
+from ultralytics import YOLO
+import torch
+
+PROJECT_ROOT = "/content/drive/MyDrive/vindr-radiogenomic-lesion-detection"
+DATA_YAML = f"{PROJECT_ROOT}/04_yolo_dataset_allboxes/data.yaml"
+
+print("CUDA available:", torch.cuda.is_available())
+print("Using data.yaml:", DATA_YAML)
+
+model = YOLO("yolov8m.pt")
+
+model.train(
+    data=DATA_YAML,
+    epochs=120,
+    imgsz=640,
+    batch=8,
+    device=0,
+    patience=30,
+    workers=2,
+    project=f"{PROJECT_ROOT}/05_yolo_runs",
+    name="vindr_yolo_allboxes_v1",
+    exist_ok=True
+)
+
+
+# train_yolo/summarize_yolo_training.py
+import pandas as pd
+import os
+
+PROJECT_ROOT = "/content/drive/MyDrive/vindr-radiogenomic-lesion-detection"
+RUN_DIR = f"{PROJECT_ROOT}/05_yolo_runs/vindr_yolo_allboxes_v1"
+CSV_PATH = os.path.join(RUN_DIR, "results.csv")
+
+df = pd.read_csv(CSV_PATH)
+
+best_idx = df["metrics/mAP50-95(B)"].idxmax()
+best_row = df.loc[best_idx]
+last_row = df.iloc[-1]
+
+print("\n===== YOLO TRAINING SUMMARY =====\n")
+print(f"Total epochs trained: {len(df)}")
+
+print("\n--- BEST EPOCH ---")
+print(f"Epoch: {int(best_row['epoch'])}")
+print(f"Precision: {best_row['metrics/precision(B)']:.3f}")
+print(f"Recall: {best_row['metrics/recall(B)']:.3f}")
+print(f"mAP50: {best_row['metrics/mAP50(B)']:.3f}")
+print(f"mAP50-95: {best_row['metrics/mAP50-95(B)']:.3f}")
+
+print("\n--- FINAL EPOCH ---")
+print(f"Epoch: {int(last_row['epoch'])}")
+print(f"Precision: {last_row['metrics/precision(B)']:.3f}")
+print(f"Recall: {last_row['metrics/recall(B)']:.3f}")
+print(f"mAP50: {last_row['metrics/mAP50(B)']:.3f}")
+print(f"mAP50-95: {last_row['metrics/mAP50-95(B)']:.3f}")
+
+print("\n--- LOSS (FINAL EPOCH) ---")
+print(f"Box loss: {last_row['train/box_loss']:.3f}")
+print(f"Cls loss: {last_row['train/cls_loss']:.3f}")
+print(f"DFL loss: {last_row['train/dfl_loss']:.3f}")
+
+print("\n===== END OF SUMMARY =====")
