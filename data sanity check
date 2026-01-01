@@ -1,9 +1,54 @@
-Class dağılımı
+# data sanity check/inspect_csv_columns.py
+from google.colab import drive
+drive.mount("/content/drive", force_remount=True)
 
-Örnek bounding box çizimi
+import pandas as pd
 
-“Model saçma şeyler mi görecek?” kontrolü
+PROJECT_ROOT = "/content/drive/MyDrive/vindr-radiogenomic-lesion-detection"
+CSV_PATH = f"{PROJECT_ROOT}/00_raw_data/finding_annotations.csv"
 
-Hocaya söyleyeceğin cümle:
+finding_df = pd.read_csv(CSV_PATH)
+print("\nFinding annotations columns:")
+print(list(finding_df.columns))
+print("\nHead:")
+print(finding_df.head(5))
 
-“Modeli eğitmeden önce tıbbi mantık kontrolü yaptım.”
+
+# data sanity check/visualize_labels_on_png.py
+from google.colab import drive
+drive.mount("/content/drive", force_remount=True)
+
+import os, random
+import cv2
+import matplotlib.pyplot as plt
+
+PROJECT_ROOT = "/content/drive/MyDrive/vindr-radiogenomic-lesion-detection"
+YOLO_ROOT = f"{PROJECT_ROOT}/04_yolo_dataset_allboxes"
+
+IMG_DIR = f"{YOLO_ROOT}/images/train"
+LBL_DIR = f"{YOLO_ROOT}/labels/train"
+
+imgs = [f for f in os.listdir(IMG_DIR) if f.endswith(".png")]
+sample = random.sample(imgs, 5)
+
+for img_name in sample:
+    img = cv2.imread(os.path.join(IMG_DIR, img_name))
+    h, w = img.shape[:2]
+
+    lab_path = os.path.join(LBL_DIR, img_name.replace(".png", ".txt"))
+    if os.path.exists(lab_path):
+        with open(lab_path) as f:
+            for line in f:
+                parts = line.strip().split()
+                if len(parts) != 5:
+                    continue
+                cls, x, y, bw, bh = map(float, parts)
+                x1 = int((x - bw/2) * w); y1 = int((y - bh/2) * h)
+                x2 = int((x + bw/2) * w); y2 = int((y + bh/2) * h)
+                cv2.rectangle(img, (x1,y1), (x2,y2), (0,255,0), 2)
+
+    plt.figure(figsize=(4,4))
+    plt.imshow(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
+    plt.title(img_name)
+    plt.axis("off")
+    plt.show()
